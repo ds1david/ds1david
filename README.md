@@ -4,87 +4,70 @@
 
 Engenheiro de Software com **25+ anos de experiência**, especializado em Java, microsserviços, sistemas distribuídos e cloud. Atuo na construção de soluções escaláveis, resilientes e de alto volume transacional.
 
-<table>
-<tr>
-<td valign="top" width="50%">
-
 ### 🚀 Especialidades
 
-- Microsserviços
-- Arquitetura de Sistemas
-- Sistemas Distribuídos
-- APIs & Integrações
-- Mensageria
-- Cloud Computing
-- DevSecOps
-- Observabilidade
-- IA aplicada à Engenharia
-- Spec-Driven Development
-
-</td>
-<td valign="top" width="50%">
+- ☕ Java 8–25, Spring Boot, WebFlux, Quarkus e GraalVM
+- 🏗️ Microsserviços, DDD, Clean Architecture e sistemas distribuídos
+- 📨 Kafka, RabbitMQ e integração entre sistemas
+- ☁️ AWS, Azure e GCP
+- 🗄️ PostgreSQL, Oracle, SQL Server, Redis e MongoDB
+- 🔐 DevSecOps, CI/CD, testes automatizados e observabilidade
+- 🤖 IA aplicada à engenharia de software e Spec-Driven Development
 
 ### 🛠️ Tecnologias & Ferramentas
 
-**Backend**
-
+#### Backend
 <p>
-<img src="https://img.shields.io/badge/Java-ED8B00?style=flat-square&logo=openjdk&logoColor=white"/>
-<img src="https://img.shields.io/badge/Spring_Boot-6DB33F?style=flat-square&logo=springboot&logoColor=white"/>
-<img src="https://img.shields.io/badge/Quarkus-4695EB?style=flat-square&logo=quarkus&logoColor=white"/>
-<img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Java-ED8B00?style=for-the-badge&logo=openjdk&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Spring_Boot-6DB33F?style=for-the-badge&logo=springboot&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Quarkus-4695EB?style=for-the-badge&logo=quarkus&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white"/>
 </p>
 
-**Cloud & DevOps**
-
+#### Arquitetura & Mensageria
 <p>
-<img src="https://img.shields.io/badge/AWS-232F3E?style=flat-square&logo=amazonaws&logoColor=white"/>
-<img src="https://img.shields.io/badge/Azure-0078D4?style=flat-square&logo=microsoftazure&logoColor=white"/>
-<img src="https://img.shields.io/badge/GCP-4285F4?style=flat-square&logo=googlecloud&logoColor=white"/>
-<img src="https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white"/>
-<img src="https://img.shields.io/badge/Kubernetes-326CE5?style=flat-square&logo=kubernetes&logoColor=white"/>
-<img src="https://img.shields.io/badge/GitHub_Actions-2088FF?style=flat-square&logo=githubactions&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Microservices-000000?style=for-the-badge"/>
+  <img src="https://img.shields.io/badge/Apache_Kafka-231F20?style=for-the-badge&logo=apachekafka&logoColor=white"/>
+  <img src="https://img.shields.io/badge/RabbitMQ-FF6600?style=for-the-badge&logo=rabbitmq&logoColor=white"/>
+  <img src="https://img.shields.io/badge/DDD-000000?style=for-the-badge"/>
+  <img src="https://img.shields.io/badge/Clean_Architecture-000000?style=for-the-badge"/>
 </p>
 
-**Dados**
-
+#### Cloud & DevOps
 <p>
-<img src="https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white"/>
-<img src="https://img.shields.io/badge/Oracle-F80000?style=flat-square&logo=oracle&logoColor=white"/>
-<img src="https://img.shields.io/badge/SQL_Server-CC2927?style=flat-square&logo=microsoftsqlserver&logoColor=white"/>
-<img src="https://img.shields.io/badge/MongoDB-47A248?style=flat-square&logo=mongodb&logoColor=white"/>
-<img src="https://img.shields.io/badge/Redis-DC382D?style=flat-square&logo=redis&logoColor=white"/>
+  <img src="https://img.shields.io/badge/AWS-232F3E?style=for-the-badge&logo=amazonaws&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Azure-0078D4?style=for-the-badge&logo=microsoftazure&logoColor=white"/>
+  <img src="https://img.shields.io/badge/GCP-4285F4?style=for-the-badge&logo=googlecloud&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Kubernetes-326CE5?style=for-the-badge&logo=kubernetes&logoColor=white"/>
+  <img src="https://img.shields.io/badge/GitHub_Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white"/>
 </p>
 
-**Mensageria**
-
+#### Dados
 <p>
-<img src="https://img.shields.io/badge/Kafka-231F20?style=flat-square&logo=apachekafka&logoColor=white"/>
-<img src="https://img.shields.io/badge/RabbitMQ-FF6600?style=flat-square&logo=rabbitmq&logoColor=white"/>
+  <img src="https://img.shields.io/badge/PostgreSQL-4169E1?style=for-the-badge&logo=postgresql&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Oracle-F80000?style=for-the-badge&logo=oracle&logoColor=white"/>
+  <img src="https://img.shields.io/badge/SQL_Server-CC2927?style=for-the-badge&logo=microsoftsqlserver&logoColor=white"/>
+  <img src="https://img.shields.io/badge/MongoDB-47A248?style=for-the-badge&logo=mongodb&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Redis-DC382D?style=for-the-badge&logo=redis&logoColor=white"/>
 </p>
 
-**Qualidade & Observabilidade**
-
+#### Qualidade & Observabilidade
 <p>
-<img src="https://img.shields.io/badge/JUnit-25A162?style=flat-square&logo=junit5&logoColor=white"/>
-<img src="https://img.shields.io/badge/Mockito-78A641?style=flat-square"/>
-<img src="https://img.shields.io/badge/SonarQube-4E9BCD?style=flat-square&logo=sonarqube&logoColor=white"/>
-<img src="https://img.shields.io/badge/Prometheus-E6522C?style=flat-square&logo=prometheus&logoColor=white"/>
-<img src="https://img.shields.io/badge/Grafana-F46800?style=flat-square&logo=grafana&logoColor=white"/>
+  <img src="https://img.shields.io/badge/JUnit-25A162?style=for-the-badge&logo=junit5&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Mockito-78A641?style=for-the-badge"/>
+  <img src="https://img.shields.io/badge/SonarQube-4E9BCD?style=for-the-badge&logo=sonarqube&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Prometheus-E6522C?style=for-the-badge&logo=prometheus&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Grafana-F46800?style=for-the-badge&logo=grafana&logoColor=white"/>
 </p>
 
-**IA & Engenharia Moderna**
-
+#### IA & Engenharia Moderna
 <p>
-<img src="https://img.shields.io/badge/LLM-000000?style=flat-square"/>
-<img src="https://img.shields.io/badge/AI_Agents-000000?style=flat-square"/>
-<img src="https://img.shields.io/badge/MCP-000000?style=flat-square"/>
-<img src="https://img.shields.io/badge/Spec--Driven_Development-000000?style=flat-square"/>
+  <img src="https://img.shields.io/badge/AI_Agents-000000?style=for-the-badge"/>
+  <img src="https://img.shields.io/badge/LLM-000000?style=for-the-badge"/>
+  <img src="https://img.shields.io/badge/MCP-000000?style=for-the-badge"/>
+  <img src="https://img.shields.io/badge/Spec--Driven_Development-000000?style=for-the-badge"/>
 </p>
-
-</td>
-</tr>
-</table>
 
 ### 📊 Alguns resultados
 
