@@ -27,9 +27,13 @@ Exploro arquitetura, engenharia de software e IA por meio de projetos open sourc
 
 ### 🐍 Contribuições no GitHub
 
-![GitHub Contribution Snake](https://raw.githubusercontent.com/ds1david/ds1david/output/github-contribution-grid-snake.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ds1david/ds1david/gh-pages/github-contribution-grid-snake-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/ds1david/ds1david/gh-pages/github-contribution-grid-snake.svg">
+  <img alt="GitHub Contribution Snake" src="https://raw.githubusercontent.com/ds1david/ds1david/gh-pages/github-contribution-grid-snake.svg">
+</picture>
 
-*Uma visualização das minhas contribuições ao longo do tempo, gerada com [Snk](https://github.com/Platane/snk).* 
+*Uma visualização das minhas contribuições ao longo do tempo, gerada com [Snk](https://github.com/Platane/snk).*
 
 ### 📫 Onde me encontrar
 
