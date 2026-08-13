@@ -25,6 +25,12 @@ Engenheiro de Software com **25+ anos de experiência**, especializado em Java, 
 
 Exploro arquitetura, engenharia de software e IA por meio de projetos open source e laboratórios técnicos, incluindo agentes de IA, automação de engenharia e sistemas de evolução de estratégias.
 
+### 🐍 Contribuições no GitHub
+
+![GitHub Contribution Snake](https://raw.githubusercontent.com/ds1david/ds1david/output/github-contribution-grid-snake.svg)
+
+*Uma visualização das minhas contribuições ao longo do tempo, gerada com [Snk](https://github.com/Platane/snk).* 
+
 ### 📫 Onde me encontrar
 
 [LinkedIn](https://www.linkedin.com/in/ds1david-oliveira) • [GitHub](https://github.com/ds1david)
