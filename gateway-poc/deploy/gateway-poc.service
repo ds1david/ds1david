@@ -1,0 +1,38 @@
+[Unit]
+Description=Controlled synthetic Python gateway POC
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gateway-poc
+Group=gateway-poc
+WorkingDirectory=/opt/gateway-poc
+ExecStart=/usr/bin/python3 /opt/gateway-poc/poc.py gateway --bind 0.0.0.0 --port 443 --ca /etc/gateway-poc/ca.crt --cert /etc/gateway-poc/gateway.crt --key /etc/gateway-poc/gateway.key --policy /etc/gateway-poc/policy.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+UMask=0077
+TasksMax=24
+MemoryMax=128M
+CPUQuota=50%
+LimitNOFILE=64
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
+
+[Install]
+WantedBy=multi-user.target

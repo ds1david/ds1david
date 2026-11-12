@@ -1,0 +1,15 @@
+{
+  "status": "design_only_not_loaded_by_runtime",
+  "access_model": "loopback_ports_on_authenticated_client",
+  "required_before_activation": [
+    "endpoint_security_approval_of_python_agent",
+    "explicit_agent_identity_and_per_service_authorization",
+    "service_owner_and_network_approval",
+    "review_and_test_of_new_destination_adapter"
+  ],
+  "requested_services": [
+    {"id": "gitlab", "protocol": "https", "host": "gitlab.sicredi.net", "port": 443, "enabled": false},
+    {"id": "artifactory", "protocol": "http", "host": "artifactory.sicredi.net", "port": 80, "enabled": false},
+    {"id": "oracle", "protocol": "tcp", "host": "aceitacaopag-liquidacao-direta-db-oradb.dev.sicredi.cloud", "port": 1531, "enabled": false}
+  ]
+}

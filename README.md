@@ -78,6 +78,8 @@ Engenheiro de Software com **25+ anos de experiência**, especializado em Java, 
 
 ### 🧪 Projetos e experimentos
 
+- [Gateway e agente Python — POC controlada](gateway-poc/README.md): mTLS, autorização por serviço e encaminhamento restrito a laboratório.
+
 Exploro arquitetura, engenharia de software e IA por meio de projetos open source e laboratórios técnicos, incluindo agentes de IA, automação de engenharia e sistemas de evolução de estratégias.
 
 ### 🐍 Contribuições no GitHub
