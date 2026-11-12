@@ -242,7 +242,10 @@ class Handler(socketserver.BaseRequestHandler):
                 if gateway.job is job:
                     gateway.job = None
         send(sock, job['result'] if completed else {'error': 'agent_timeout'})
-        audit('request_finished', request_id=job['id'], outcome='ok' if completed and 'result' in job['result'] else 'failed')
+        reason = ('ok' if 'result' in job['result'] else job['result']['error']) if completed else (
+            'agent_response_timeout' if job['assigned'] else 'agent_not_polling')
+        audit('request_finished', request_id=job['id'], service=service,
+              outcome='ok' if reason == 'ok' else 'failed', reason=reason)
 
     def pull(self, sock, service, fingerprint):
         gateway = self.server
@@ -268,6 +271,8 @@ class Handler(socketserver.BaseRequestHandler):
             response = receive(sock, timeout=4)
             if response == {'id': job['id'], 'result': SERVICES[service][1]}:
                 job['result'] = {'result': SERVICES[service][1]}
+            elif response == {'id': job['id'], 'error': 'lab_unavailable'}:
+                job['result'] = {'error': 'lab_unavailable'}
             else:
                 job['result'] = {'error': 'invalid_lab_response'}
         finally:
@@ -339,6 +344,7 @@ def agent(args, stop=None):
     context = tls(args.ca, args.cert, args.key)
     delay = 1
     connected = False
+    last_report = 0
     audit('agent_started', service=args.service)
     while not stop.is_set():
         try:
@@ -353,6 +359,10 @@ def agent(args, stop=None):
                 if not connected:
                     audit('agent_connected', service=args.service)
                     connected = True
+                    last_report = time.monotonic()
+                elif time.monotonic() - last_report >= 30:
+                    audit('agent_polling', service=args.service)
+                    last_report = time.monotonic()
                 if job != {'idle': True}:
                     if args.service == STREAM_SERVICE:
                         if set(job) != {'id', 'service', 'mode'} or job['service'] != STREAM_SERVICE or job['mode'] != 'stream':
@@ -393,6 +403,7 @@ class Lab(http.server.BaseHTTPRequestHandler):
                 self.send_header('Content-Length', str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
+                audit('lab_request', service=payload['service'])
                 return
         self.send_error(404)
 
@@ -460,7 +471,10 @@ def main():
         stop = threading.Event()
         signal.signal(signal.SIGINT, lambda *_: stop.set())
         signal.signal(signal.SIGTERM, lambda *_: stop.set())
-        agent(args, stop)
+        try:
+            agent(args, stop)
+        finally:
+            audit('agent_stopped', service=args.service)
     elif args.mode == 'forward':
         if args.service != STREAM_SERVICE:
             parser.error('forward requires --service lab-echo')

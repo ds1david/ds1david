@@ -354,9 +354,30 @@ class IntegrationTests(unittest.TestCase):
             with self.assertRaises(ConnectionRefusedError):
                 poc.lab_read('lab-status')
 
+    def test_agent_reports_lab_failure_to_client(self):
+        stop = threading.Event()
+        args = argparse.Namespace(host='localhost', port=self.gateway.server_address[1],
+                                  ca=str(self.certs / 'ca.crt'), cert=str(self.certs / 'agent.crt'),
+                                  key=str(self.certs / 'agent.key'), service='lab-status')
+        with mock.patch.object(poc, 'lab_read', side_effect=ConnectionRefusedError):
+            worker = threading.Thread(target=poc.agent, args=(args, stop), daemon=True)
+            worker.start()
+            try:
+                self.assertEqual({'error': 'lab_unavailable'},
+                                 self.request({'op': 'query', 'service': 'lab-status'}))
+            finally:
+                stop.set()
+                worker.join(15)
+                self.assertFalse(worker.is_alive())
+
     def test_absent_agent_times_out_and_cleans_slot(self):
+        before = len(self.output.getvalue())
         self.assertEqual({'error': 'agent_timeout'}, self.request({'op': 'query', 'service': 'lab-status'}))
         self.assertIsNone(self.gateway.job)
+        deadline = time.monotonic() + 2
+        while 'agent_not_polling' not in self.output.getvalue()[before:] and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertIn('agent_not_polling', self.output.getvalue()[before:])
 
 
 if __name__ == '__main__':

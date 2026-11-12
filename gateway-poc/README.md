@@ -294,6 +294,21 @@ a política antiga com certificados novos. Preserve os certificados da EC2 separ
 
 ### Operação regular
 
+Mantenha quatro terminais separados na mesma pasta para o teste: gateway, agente,
+laboratório e query. `agent_connected` comprova um poll bem-sucedido naquele instante;
+o agente precisa continuar executando quando a query for enviada. Ctrl+C encerra o
+agente e agora registra `agent_stopped`. Enquanto está ativo e autenticado, registra
+`agent_polling` a cada aproximadamente 30 segundos. Se houver falhas, procure
+`agent_reconnect` ou `agent_denied`. O `lab` registra `lab_request` somente para as
+duas rotas fixas sintéticas, sem conteúdo ou caminhos fornecidos pelo cliente.
+
+Em `request_finished`, `reason=agent_not_polling` significa que nenhum agente recolheu
+o pedido para aquele serviço dentro de oito segundos; confirme agente ativo, `--service`,
+host e porta nos três processos. `reason=agent_response_timeout` indica pedido recolhido
+sem resposta no prazo; procure `request_assigned` e os logs do agente.
+`reason=lab_unavailable` indica que o agente recebeu o pedido, mas não conseguiu validar
+uma resposta do laboratório. Um agente com `--service lab-echo` não atende `lab-status`.
+
 - `agent_timeout`: agente desconectado, serviço divergente, identidade sem autorização
   ou rede bloqueada. Confira horário, SAN, validade e eventos JSON; nunca desligue a validação TLS.
 - `lab_unavailable`/`invalid_lab_response`: suba `python poc.py lab` e confirme porta
