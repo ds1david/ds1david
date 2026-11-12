@@ -36,9 +36,20 @@ TARGETS = {
 }
 
 
+class ChannelError(ValueError):
+    """Fixed public error code; never include response bodies or headers."""
+    def __init__(self, reason, stage, http_status=None):
+        super().__init__(reason)
+        self.reason, self.poc_stage, self.http_status = reason, stage, http_status
+
+
 def diagnostics(error):
     result = poc.diagnostic_fields(error, 'https_channel')
-    if isinstance(error, jwt.InvalidSignatureError):
+    if isinstance(error, ChannelError):
+        result['reason'] = error.reason
+        if type(error.http_status) is int:
+            result['http_status'] = error.http_status
+    elif isinstance(error, jwt.InvalidSignatureError):
         result['reason'] = 'application_signature_invalid'
     elif isinstance(error, jwt.ExpiredSignatureError):
         result['reason'] = 'application_message_expired'
@@ -98,7 +109,7 @@ def decode(token, public_key, issuer, audience):
             or type(result['iat']) is not int or type(result['exp']) is not int
             or not 0 < result['exp'] - result['iat'] <= 30
             or not isinstance(result['jti'], str) or len(result['jti']) != 32):
-        raise ValueError('invalid claims')
+        raise ChannelError('application_claims_invalid', 'application_authentication')
     return result
 
 
@@ -239,18 +250,21 @@ class APIHandler(TLSAccept, http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         state = self.server.state
+        stage = 'http_request'
         try:
             lengths = self.headers.get_all('Content-Length', [])
             if (self.path != '/v1/exchange' or len(lengths) != 1 or 'Transfer-Encoding' in self.headers
                     or not 0 < int(lengths[0]) <= MAX_HTTP):
                 raise ValueError('invalid request')
             token = self.rfile.read(int(lengths[0])).decode('ascii')
+            stage = 'agent_authentication'
             message = decode(token, file(state.config, 'agent_public'),
                              state.config['agent_id'], state.config['gateway_id'])
             if message['reply_to'] != '':
                 raise ValueError('request binding')
             state.rate(state.config['agent_id'], 1200)
             state.replay.claim(message)
+            stage = 'service_dispatch'
             response = state.exchange(message['body'])
             output = state.signer.sign(state.config['agent_id'], response, message['jti']).encode()
             self.send_response(200)
@@ -259,8 +273,11 @@ class APIHandler(TLSAccept, http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Length', str(len(output)))
             self.end_headers()
             self.wfile.write(output)
-        except (OSError, ValueError, TypeError, KeyError, jwt.PyJWTError, RecursionError):
-            poc.audit('https_request_rejected')
+        except (OSError, ValueError, TypeError, KeyError, jwt.PyJWTError, RecursionError) as error:
+            details = diagnostics(error)
+            if details['stage'] == 'https_channel':
+                details['stage'] = stage
+            poc.audit('https_request_rejected', **details)
             self.send_error(403, 'denied')
 
 
@@ -352,13 +369,21 @@ class Channel:
         try:
             connection.request('POST', '/v1/exchange', token, {'Content-Type': 'application/jwt'})
             response = connection.getresponse()
+            if response.status != 200:
+                raise ChannelError('https_http_error', 'http_response', response.status)
+            if response.getheader('Content-Type', '').split(';')[0].strip().lower() != 'application/jwt':
+                raise ChannelError('https_unexpected_content_type', 'http_response', response.status)
             data = response.read(MAX_HTTP + 1)
-            if response.status != 200 or len(data) > MAX_HTTP:
-                raise ValueError('endpoint denied request')
-            result = decode(data, file(self.config, 'gateway_public'),
-                            self.config['gateway_id'], self.config['agent_id'])
+            if len(data) > MAX_HTTP:
+                raise ChannelError('https_response_too_large', 'http_response', response.status)
+            try:
+                result = decode(data, file(self.config, 'gateway_public'),
+                                self.config['gateway_id'], self.config['agent_id'])
+            except (jwt.PyJWTError, OSError) as error:
+                error.poc_stage = 'gateway_authentication'
+                raise
             if result['reply_to'] != claims['jti']:
-                raise ValueError('response binding')
+                raise ChannelError('application_response_binding_invalid', 'gateway_authentication')
             return result['body']
         finally:
             connection.close()

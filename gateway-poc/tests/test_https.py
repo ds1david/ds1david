@@ -99,13 +99,35 @@ class HTTPSIntegration(unittest.TestCase):
         self.assertEqual('wrong-request', decoded['reply_to'])
         fake_response = mock.MagicMock(status=200)
         fake_response.read.return_value = token.encode()
+        fake_response.getheader.return_value = 'application/jwt'
         with mock.patch.object(h.http.client, 'HTTPSConnection') as connection:
             connection.return_value.getresponse.return_value = fake_response
-            with self.assertRaisesRegex(ValueError, 'response binding'):
+            with self.assertRaisesRegex(ValueError, 'application_response_binding_invalid'):
                 channel.request({'action': 'check', 'service': 'lab-status'})
         wrong = h.Signer(self.agent['gateway_id'], h.file(self.agent, 'signing_key')).sign(self.agent['agent_id'], {'ready': True})
         with self.assertRaises(jwt.InvalidSignatureError):
             h.decode(wrong, h.file(self.agent, 'gateway_public'), self.agent['gateway_id'], self.agent['agent_id'])
+
+    def test_http_error_status_and_html_are_diagnosed_without_content(self):
+        channel = h.Channel(self.agent)
+        for status in (403, 404, 407, 502, 503):
+            response = mock.MagicMock(status=status)
+            response.read.return_value = b'sensitive proxy response body'
+            with mock.patch.object(h.http.client, 'HTTPSConnection') as connection:
+                connection.return_value.getresponse.return_value = response
+                with self.assertRaises(h.ChannelError) as failure:
+                    channel.request({'action': 'check', 'service': 'lab-status'})
+            self.assertEqual({'reason': 'https_http_error', 'stage': 'http_response',
+                              'http_status': status}, h.diagnostics(failure.exception))
+            response.read.assert_not_called()
+        response = mock.MagicMock(status=200)
+        response.getheader.return_value = 'text/html; charset=utf-8'
+        with mock.patch.object(h.http.client, 'HTTPSConnection') as connection:
+            connection.return_value.getresponse.return_value = response
+            with self.assertRaises(h.ChannelError) as failure:
+                channel.request({'action': 'check', 'service': 'lab-status'})
+        self.assertEqual('https_unexpected_content_type', h.diagnostics(failure.exception)['reason'])
+        response.read.assert_not_called()
 
     def test_expired_or_modified_agent_message_rejected(self):
         signer = h.Channel(self.agent).signer

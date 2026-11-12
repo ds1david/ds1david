@@ -86,6 +86,10 @@ no pacote e não são aprendidas pela rede.
 
 ## 2. Preparar a EC2 e o DNS
 
+Para os comandos completos de primeira instalacao no Ubuntu, use
+[INSTALL-HTTPS-EC2.md](deploy/INSTALL-HTTPS-EC2.md). `gateway-poc-https` e HAProxy
+precisam estar ativos ANTES do primeiro Check no Windows restrito.
+
 Adicione o registro A `agent-gateway.sicredi.space` para a mesma EC2. Mantenha ambos
 os registros em DNS only. O endpoint antigo não pode continuar ocupando 443 quando
 HAProxy for assumir a porta; faça a transição em janela aprovada e preserve o rollback.
