@@ -39,6 +39,28 @@ class TempDirectory:
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_missing_ca_reports_file_error_before_network(self):
+        output = io.StringIO()
+        with TempDirectory() as directory:
+            missing = str(Path(directory) / 'missing-ca.crt')
+            with mock.patch('sys.argv', ['poc.py', 'check', '--ca', missing,
+                                         '--cert', 'unused.crt', '--key', 'unused.key']), \
+                    mock.patch.object(poc.socket, 'create_connection') as connect, \
+                    contextlib.redirect_stdout(output):
+                self.assertEqual(1, poc.main())
+                connect.assert_not_called()
+        event = json.loads(output.getvalue())
+        self.assertEqual('file_not_found', event['reason'])
+        self.assertEqual('tls_ca_load', event['stage'])
+        self.assertNotIn(missing, output.getvalue())
+
+    def test_network_diagnostics_include_only_numeric_codes(self):
+        error = OSError(123, 'sensitive exception text')
+        error.winerror = 10013
+        error.poc_stage = 'tcp_connect'
+        self.assertEqual({'reason': 'network_error', 'stage': 'tcp_connect',
+                          'errno': 123, 'winerror': 10013}, poc.diagnostic_fields(error, 'fallback'))
+
     def test_diagnostics_use_fixed_codes_without_exception_text(self):
         error = ssl.SSLCertVerificationError(1, 'sensitive exception text')
         error.verify_code = 62

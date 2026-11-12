@@ -58,9 +58,22 @@ def failure_reason(error):
         return 'dns_failed'
     if isinstance(error, ConnectionError):
         return 'connection_closed'
+    if isinstance(error, FileNotFoundError):
+        return 'file_not_found'
+    if isinstance(error, PermissionError):
+        return 'access_denied'
     if isinstance(error, OSError):
         return 'network_error'
     return 'invalid_protocol'
+
+
+def diagnostic_fields(error, stage):
+    fields = {'reason': failure_reason(error), 'stage': getattr(error, 'poc_stage', stage)}
+    for name in ('errno', 'winerror'):
+        value = getattr(error, name, None)
+        if isinstance(value, int):
+            fields[name] = value
+    return fields
 
 
 def exact(sock, count, deadline):
@@ -99,8 +112,16 @@ def tls(ca, cert, key, server=False):
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER if server else ssl.PROTOCOL_TLS_CLIENT)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.verify_mode = ssl.CERT_REQUIRED
-    context.load_verify_locations(cafile=ca)
-    context.load_cert_chain(cert, key)
+    try:
+        context.load_verify_locations(cafile=ca)
+    except (OSError, ValueError) as error:
+        error.poc_stage = 'tls_ca_load'
+        raise
+    try:
+        context.load_cert_chain(cert, key)
+    except (OSError, ValueError) as error:
+        error.poc_stage = 'tls_identity_load'
+        raise
     return context
 
 
@@ -201,8 +222,7 @@ class Handler(socketserver.BaseRequestHandler):
                 else:
                     self.query(sock, service, fingerprint)
         except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
-            audit('connection_rejected', fingerprint=fingerprint, stage=stage,
-                  reason=failure_reason(error))
+            audit('connection_rejected', fingerprint=fingerprint, **diagnostic_fields(error, stage))
 
     def query(self, sock, service, fingerprint):
         gateway = self.server
@@ -281,9 +301,17 @@ class Handler(socketserver.BaseRequestHandler):
 
 
 def connect(args, context):
-    raw = socket.create_connection((args.host, args.port), timeout=12)
+    try:
+        raw = socket.create_connection((args.host, args.port), timeout=12)
+    except OSError as error:
+        error.poc_stage = 'tcp_connect'
+        raise
     try:
         return context.wrap_socket(raw, server_hostname=args.host)
+    except (OSError, ValueError) as error:
+        error.poc_stage = 'tls_handshake'
+        raw.close()
+        raise
     except BaseException:
         raw.close()
         raise
@@ -350,7 +378,7 @@ def agent(args, stop=None):
             stop.wait(2)
         except (OSError, ValueError, TypeError, KeyError) as error:
             connected = False
-            audit('agent_reconnect', retry_seconds=delay, reason=failure_reason(error))
+            audit('agent_reconnect', retry_seconds=delay, **diagnostic_fields(error, 'service_exchange'))
             stop.wait(delay + random.uniform(0, delay / 4))
             delay = min(30, delay * 2)
 
@@ -440,14 +468,17 @@ def main():
             audit('forward_listening', service=STREAM_SERVICE, port=args.local_port)
             server.serve_forever()
     else:
+        stage = 'tls_configuration'
         try:
             with connect(args, tls(args.ca, args.cert, args.key)) as sock:
+                stage = 'request_send'
                 send(sock, {'op': 'check' if args.mode == 'check' else 'query', 'service': args.service})
+                stage = 'response_frame'
                 result = receive(sock)
                 print(json.dumps(result))
                 return 1 if 'error' in result else 0
         except (OSError, ValueError) as error:
-            audit('check_failed' if args.mode == 'check' else 'query_failed', reason=failure_reason(error))
+            audit('check_failed' if args.mode == 'check' else 'query_failed', **diagnostic_fields(error, stage))
             return 1
     return 0
 

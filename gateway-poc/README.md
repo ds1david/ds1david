@@ -233,12 +233,30 @@ máquina: use o hostname do gateway e um certificado que contenha esse mesmo hos
 | `client_certificate_required`, `peer_rejected_certificate` | Confira os arquivos de certificado/chave do agente e seus usos permitidos. |
 | `certificate_wrong_purpose`, `peer_certificate_wrong_purpose` | O agente precisa de `clientAuth`; a CA também precisa permitir esse uso. Um certificado de gateway com apenas `serverAuth` será recusado como agente. |
 | `connection_refused` | Confira se o gateway está ativo e se host/porta são os mesmos. |
+| `file_not_found` | Confira a pasta atual e os caminhos `--ca`, `--cert` e `--key`; não é uma falha de rede. |
+| `access_denied` | Use `stage` para distinguir acesso negado aos arquivos de uma conexão negada pelo sistema. |
 | `not_tls` | O processo conectado não está usando o protocolo TLS esperado. |
 | `timeout`, `connection_closed`, `tls_error` | Confira os dois lados, porta em uso e eventual interrupção de rede/endpoint. |
 
 `stage=tls_handshake` indica falha antes de receber a identidade; `request_frame`
 indica falha na leitura do pedido; `service_exchange` indica operação já autorizada.
 Não envie chaves privadas para diagnóstico. Os códigos não incluem texto bruto de exceção.
+
+No cliente, `tls_ca_load` identifica a leitura de `--ca`, `tls_identity_load` a leitura
+de certificado/chave, `tcp_connect` a conexão TCP e `response_frame` a resposta do
+gateway. Quando disponíveis, `errno` e `winerror` são registrados como números, sem
+texto de exceção ou caminhos de arquivos. Versões anteriores usavam `network_error`
+também para arquivos ausentes ou sem permissão. Antes de gerar novos certificados,
+confirme a pasta de execução e esses caminhos:
+
+```powershell
+Get-Location
+Test-Path certs-local-v2/ca.crt
+Test-Path certs-local-v2/agent.crt
+Test-Path certs-local-v2/agent.key
+```
+
+Os três resultados devem ser `True` se esse foi o nome escolhido para o conjunto.
 
 `certificate_wrong_purpose` confirma um uso incompatível na cadeia apresentada ao
 gateway; não comprova interceptação de proxy. O gerador anterior dependia da configuração
