@@ -30,8 +30,10 @@ def verify(out, hostname='localhost', openssl='openssl'):
                 raise ValueError(f'Policy does not match {role} certificate')
 
 
-def generate(out, hostname='localhost', openssl='openssl'):
+def generate(out, hostname='localhost', openssl='openssl', additional_hostname=None):
     if not re.fullmatch(r'[a-zA-Z0-9.-]{1,253}', hostname):
+        raise ValueError('DNS hostname required')
+    if additional_hostname and not re.fullmatch(r'[a-zA-Z0-9.-]{1,253}', additional_hostname):
         raise ValueError('DNS hostname required')
     out = Path(out)
     out.mkdir(mode=0o755 if os.name == 'nt' else 0o700, parents=True, exist_ok=False)
@@ -59,7 +61,10 @@ def generate(out, hostname='localhost', openssl='openssl'):
         extension += 'subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n'
         extension += 'extendedKeyUsage=' + ('serverAuth' if role == 'gateway' else 'clientAuth') + '\n'
         if role == 'gateway':
-            extension += 'subjectAltName=DNS:' + hostname + '\n'
+            extension += 'subjectAltName=DNS:' + hostname
+            if additional_hostname and additional_hostname != hostname:
+                extension += ',DNS:' + additional_hostname
+            extension += '\n'
         (out / 'extensions.cnf').write_text(extension, encoding='ascii')
         run('x509', '-req', '-in', role + '.csr', '-CA', 'ca.crt', '-CAkey', 'ca.key',
             '-CAcreateserial', '-out', role + '.crt', '-days', '2', '-sha256',
@@ -80,10 +85,11 @@ if __name__ == '__main__':
     parser.add_argument('--hostname', default='localhost')
     parser.add_argument('--openssl', default=shutil.which('openssl') or 'C:/Program Files/Git/usr/bin/openssl.exe')
     parser.add_argument('--verify-only', action='store_true', help='Validate existing public certificates and policy; do not generate files')
+    parser.add_argument('--agent-hostname', help='Additional server SAN for the HTTPS agent endpoint')
     args = parser.parse_args()
     if args.verify_only:
         verify(args.out, args.hostname, args.openssl)
         print('Certificate chains, TLS purposes, gateway hostname and policy verified.')
     else:
-        generate(args.out, args.hostname, args.openssl)
+        generate(args.out, args.hostname, args.openssl, args.agent_hostname)
         print('Disposable certificates created and verified. Protect private keys; do not copy ca.key to endpoints.')

@@ -1,0 +1,39 @@
+[Unit]
+Description=HTTPS signed-agent and mTLS-client controlled gateway POC
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gateway-poc
+Group=gateway-poc
+WorkingDirectory=/opt/gateway-poc-https
+ExecStart=/opt/gateway-poc-https/.venv/bin/python /opt/gateway-poc-https/https_poc.py gateway --config /etc/gateway-poc-https/config.json
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+StateDirectory=gateway-poc-https
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+UMask=0077
+TasksMax=32
+MemoryMax=256M
+CPUQuota=75%
+LimitNOFILE=64
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
+
+[Install]
+WantedBy=multi-user.target

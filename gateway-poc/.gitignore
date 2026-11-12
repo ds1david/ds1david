@@ -5,3 +5,8 @@ certs*/
 *.log
 policy.json
 .test-state/
+.deps/
+bundles*/
+certs*.zip
+bundles*.zip
+*.sqlite*

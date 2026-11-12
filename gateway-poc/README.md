@@ -3,6 +3,11 @@
 Projeto **secure-gateway**. Repositório oficial:
 [ds1david/ds1david](https://github.com/ds1david/ds1david), pasta `gateway-poc/`.
 
+Para o novo agente HTTPS com assinaturas de aplicação, cliente separado com mTLS,
+launcher PowerShell e preparação de GitLab/Artifactory, consulte
+[HTTPS-POC.md](HTTPS-POC.md). Os comandos antigos abaixo continuam destinados ao
+transporte mTLS original e não devem ser misturados com os pacotes HTTPS novos.
+
 Implementação independente de FRP, usando apenas a biblioteca padrão do Python 3.11+.
 O gateway atende RPC com frames JSON sobre TCP/mTLS. O agente Windows consulta o gateway
 a cada dois segundos por conexão de saída, lê um serviço fictício em loopback e devolve
@@ -28,7 +33,7 @@ for Windows); não baixe executáveis para contornar controles de endpoint.
 ```powershell
 python --version
 python make_lab_certs.py
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -p test_poc.py -v
 ```
 
 Se OpenSSL não estiver no local padrão, acrescente ao gerador
