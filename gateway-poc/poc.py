@@ -43,11 +43,13 @@ def failure_reason(error):
     if isinstance(error, ssl.SSLError):
         return {'TLSV1_ALERT_UNKNOWN_CA': 'peer_rejected_ca',
                 'SSLV3_ALERT_BAD_CERTIFICATE': 'peer_rejected_certificate',
+                'SSLV3_ALERT_UNSUPPORTED_CERTIFICATE': 'peer_certificate_wrong_purpose',
+                'TLSV1_ALERT_UNSUPPORTED_CERTIFICATE': 'peer_certificate_wrong_purpose',
                 'SSLV3_ALERT_CERTIFICATE_EXPIRED': 'peer_certificate_expired',
                 'TLSV13_ALERT_CERTIFICATE_REQUIRED': 'client_certificate_required',
                 'PEER_DID_NOT_RETURN_A_CERTIFICATE': 'client_certificate_required',
                 'WRONG_VERSION_NUMBER': 'not_tls',
-                'HTTP_REQUEST': 'not_tls'}.get(error.reason, 'tls_error')
+                'HTTP_REQUEST': 'not_tls'}.get(getattr(error, 'reason', None), 'tls_error')
     if isinstance(error, TimeoutError):
         return 'timeout'
     if isinstance(error, ConnectionRefusedError):

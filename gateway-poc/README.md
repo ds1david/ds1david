@@ -101,6 +101,12 @@ Não use compartilhamento de rede para chaves privadas. O gerador é exclusivame
 laboratório: a CA dura sete dias, os certificados dois dias, e as chaves não têm senha
 para permitir execução automatizada. Para EC2, prefira emissão e custódia pela PKI aprovada.
 
+O gerador usa perfil de emissão explícito: CA sem restrição de EKU a servidor,
+certificado `gateway` com `serverAuth`, e `agent`/`client` com `clientAuth`.
+Ao terminar, valida as cadeias em modo estrito, os usos TLS, o hostname do gateway e
+os fingerprints da política. Assim, configurações locais de emissão do OpenSSL não
+acrescentam restrições de servidor à CA descartável. Não altera a configuração global.
+
 ## Identidade, autorização e limites
 
 TLS mínimo 1.2, CA explícita em ambos os lados, certificado de cliente obrigatório,
@@ -225,6 +231,7 @@ máquina: use o hostname do gateway e um certificado que contenha esse mesmo hos
 | `certificate_expired`, `peer_certificate_expired` | Certificados de laboratório duram dois dias; emita um conjunto novo e atualize política e processos. |
 | `certificate_not_yet_valid` | Confira data/hora dos computadores e validade do certificado. |
 | `client_certificate_required`, `peer_rejected_certificate` | Confira os arquivos de certificado/chave do agente e seus usos permitidos. |
+| `certificate_wrong_purpose`, `peer_certificate_wrong_purpose` | O agente precisa de `clientAuth`; a CA também precisa permitir esse uso. Um certificado de gateway com apenas `serverAuth` será recusado como agente. |
 | `connection_refused` | Confira se o gateway está ativo e se host/porta são os mesmos. |
 | `not_tls` | O processo conectado não está usando o protocolo TLS esperado. |
 | `timeout`, `connection_closed`, `tls_error` | Confira os dois lados, porta em uso e eventual interrupção de rede/endpoint. |
@@ -232,6 +239,26 @@ máquina: use o hostname do gateway e um certificado que contenha esse mesmo hos
 `stage=tls_handshake` indica falha antes de receber a identidade; `request_frame`
 indica falha na leitura do pedido; `service_exchange` indica operação já autorizada.
 Não envie chaves privadas para diagnóstico. Os códigos não incluem texto bruto de exceção.
+
+`certificate_wrong_purpose` confirma um uso incompatível na cadeia apresentada ao
+gateway; não comprova interceptação de proxy. O gerador anterior dependia da configuração
+local do OpenSSL na emissão da CA, que podia acrescentar extensões incompatíveis.
+Também é possível ter selecionado o certificado errado ou misturado conjuntos.
+Para verificar um conjunto completo já emitido, na estação de emissão, sem conexão de
+rede e sem ler chaves privadas:
+
+```powershell
+python make_lab_certs.py --verify-only --out certs --hostname localhost
+```
+
+Essa verificação é destinada ao conjunto completo produzido pelo gerador, incluindo
+`unknown.crt` para testes negativos e `policy.json`. Se falhar, informa qual papel
+não passou na validação. Use o hostname real de emissão se ele não for `localhost`.
+Atualizar o código não corrige certificados antigos: emita um conjunto novo para o
+laboratório e reinicie gateway e agente com CA e política correspondentes.
+
+As verificações de propósito também se aplicam às CAs da cadeia, conforme a
+[documentação de verificação do OpenSSL](https://docs.openssl.org/3.4/man1/openssl-verification-options/).
 
 Para isolar certificados locais inconsistentes, pare agente e gateway com Ctrl+C,
 crie uma pasta **nova** e use exatamente esse conjunto nos dois processos:

@@ -3,6 +3,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import socket
@@ -46,6 +47,9 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual('certificate_expired', poc.failure_reason(error))
         error.verify_code = 20
         self.assertEqual('untrusted_ca', poc.failure_reason(error))
+        error.verify_code = 26
+        self.assertEqual('certificate_wrong_purpose', poc.failure_reason(error))
+        self.assertEqual('tls_error', poc.failure_reason(ssl.SSLError(1, 'sensitive exception text')))
         self.assertEqual('invalid_protocol', poc.failure_reason(ValueError('sensitive exception text')))
         self.assertEqual('connection_refused', poc.failure_reason(ConnectionRefusedError()))
         self.assertEqual('timeout', poc.failure_reason(TimeoutError()))
@@ -71,6 +75,19 @@ class ProtocolTests(unittest.TestCase):
             path.write_text(json.dumps({'a' * 64: {'role': 'agent', 'services': ['gitlab']}}))
             with self.assertRaises(ValueError):
                 poc.load_policy(path)
+
+    def test_issuance_profile_does_not_inherit_server_only_ca(self):
+        openssl = shutil.which('openssl') or 'C:/Program Files/Git/usr/bin/openssl.exe'
+        with TempDirectory() as directory:
+            directory = Path(directory)
+            config = directory / 'server-only.cnf'
+            config.write_text('[req]\ndistinguished_name=dn\nx509_extensions=wrong_ca\n'
+                              '[dn]\nCN=Server only\n'
+                              '[wrong_ca]\nbasicConstraints=critical,CA:TRUE\n'
+                              'keyUsage=critical,keyCertSign,cRLSign\nextendedKeyUsage=serverAuth\n')
+            with mock.patch.dict(os.environ, {'OPENSSL_CONF': str(config)}):
+                make_lab_certs.generate(directory / 'issued', openssl=openssl)
+                make_lab_certs.verify(directory / 'issued', openssl=openssl)
 
     def test_agent_reconnect_backoff_and_recovers(self):
         class Stop:
@@ -103,6 +120,7 @@ class IntegrationTests(unittest.TestCase):
         cls.temp = TempDirectory()
         cls.certs = Path(cls.temp.name) / 'certs'
         openssl = shutil.which('openssl') or 'C:/Program Files/Git/usr/bin/openssl.exe'
+        cls.openssl = openssl
         make_lab_certs.generate(cls.certs, openssl=openssl)
         cls.output = io.StringIO()
         cls.capture = contextlib.redirect_stdout(cls.output)
@@ -161,6 +179,31 @@ class IntegrationTests(unittest.TestCase):
     def test_hostname_validation(self):
         with self.assertRaises(ssl.SSLCertVerificationError):
             self.connect(hostname='wrong.invalid')
+
+    def test_server_certificate_cannot_be_used_as_agent(self):
+        before = len(self.output.getvalue())
+        with self.assertRaises((ssl.SSLError, ConnectionError, OSError)):
+            with self.connect('gateway') as sock:
+                poc.send(sock, {'op': 'check', 'service': 'lab-status'})
+                poc.receive(sock)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            logs = self.output.getvalue()[before:]
+            if 'certificate_wrong_purpose' in logs:
+                break
+            time.sleep(.01)
+        self.assertIn('certificate_wrong_purpose', logs)
+        self.assertIn('tls_handshake', logs)
+
+    def test_offline_verifier_rejects_wrong_agent_purpose(self):
+        with TempDirectory() as directory:
+            directory = Path(directory)
+            for source in self.certs.glob('*.crt'):
+                shutil.copyfile(source, directory / source.name)
+            shutil.copyfile(self.certs / 'policy.json', directory / 'policy.json')
+            shutil.copyfile(self.certs / 'gateway.crt', directory / 'agent.crt')
+            with self.assertRaisesRegex(ValueError, 'validation failed for agent'):
+                make_lab_certs.verify(directory, openssl=self.openssl)
 
     def test_check_authenticates_without_consuming_jobs(self):
         sentinel = {'pending': True}
