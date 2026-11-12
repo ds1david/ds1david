@@ -38,6 +38,18 @@ class TempDirectory:
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_diagnostics_use_fixed_codes_without_exception_text(self):
+        error = ssl.SSLCertVerificationError(1, 'sensitive exception text')
+        error.verify_code = 62
+        self.assertEqual('hostname_mismatch', poc.failure_reason(error))
+        error.verify_code = 10
+        self.assertEqual('certificate_expired', poc.failure_reason(error))
+        error.verify_code = 20
+        self.assertEqual('untrusted_ca', poc.failure_reason(error))
+        self.assertEqual('invalid_protocol', poc.failure_reason(ValueError('sensitive exception text')))
+        self.assertEqual('connection_refused', poc.failure_reason(ConnectionRefusedError()))
+        self.assertEqual('timeout', poc.failure_reason(TimeoutError()))
+
     def test_oversized_and_non_object(self):
         for payload in (struct.pack('!I', poc.MAX_FRAME + 1), struct.pack('!I', 2) + b'[]'):
             class Reader:
@@ -149,6 +161,18 @@ class IntegrationTests(unittest.TestCase):
     def test_hostname_validation(self):
         with self.assertRaises(ssl.SSLCertVerificationError):
             self.connect(hostname='wrong.invalid')
+
+    def test_check_authenticates_without_consuming_jobs(self):
+        sentinel = {'pending': True}
+        with self.gateway.lock:
+            self.gateway.job = sentinel
+        try:
+            self.assertEqual({'ready': True}, self.request({'op': 'check', 'service': 'lab-status'}, 'agent'))
+            self.assertIs(self.gateway.job, sentinel)
+            self.assertEqual({'error': 'denied'}, self.request({'op': 'check', 'service': 'gitlab'}, 'agent'))
+        finally:
+            with self.gateway.lock:
+                self.gateway.job = None
 
     def test_client_certificate_required(self):
         context = ssl.create_default_context(cafile=str(self.certs / 'ca.crt'))

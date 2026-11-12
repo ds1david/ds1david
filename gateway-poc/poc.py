@@ -32,6 +32,35 @@ def audit(event, **fields):
                       'event': event, **fields}), flush=True)
 
 
+def failure_reason(error):
+    """Return fixed diagnostic codes, never exception text or peer input."""
+    if isinstance(error, ssl.SSLCertVerificationError):
+        return {9: 'certificate_not_yet_valid', 10: 'certificate_expired',
+                18: 'untrusted_certificate', 19: 'untrusted_ca',
+                20: 'untrusted_ca', 21: 'untrusted_ca',
+                26: 'certificate_wrong_purpose', 62: 'hostname_mismatch',
+                64: 'hostname_mismatch'}.get(error.verify_code, 'certificate_verification_failed')
+    if isinstance(error, ssl.SSLError):
+        return {'TLSV1_ALERT_UNKNOWN_CA': 'peer_rejected_ca',
+                'SSLV3_ALERT_BAD_CERTIFICATE': 'peer_rejected_certificate',
+                'SSLV3_ALERT_CERTIFICATE_EXPIRED': 'peer_certificate_expired',
+                'TLSV13_ALERT_CERTIFICATE_REQUIRED': 'client_certificate_required',
+                'PEER_DID_NOT_RETURN_A_CERTIFICATE': 'client_certificate_required',
+                'WRONG_VERSION_NUMBER': 'not_tls',
+                'HTTP_REQUEST': 'not_tls'}.get(error.reason, 'tls_error')
+    if isinstance(error, TimeoutError):
+        return 'timeout'
+    if isinstance(error, ConnectionRefusedError):
+        return 'connection_refused'
+    if isinstance(error, socket.gaierror):
+        return 'dns_failed'
+    if isinstance(error, ConnectionError):
+        return 'connection_closed'
+    if isinstance(error, OSError):
+        return 'network_error'
+    return 'invalid_protocol'
+
+
 def exact(sock, count, deadline):
     result = bytearray()
     while len(result) < count:
@@ -133,11 +162,13 @@ class Gateway(socketserver.ThreadingMixIn, socketserver.TCPServer):
 class Handler(socketserver.BaseRequestHandler):
     def handle(self):
         fingerprint = None
+        stage = 'tls_handshake'
         try:
             self.request.settimeout(4)
             with self.server.context.wrap_socket(self.request, server_side=True) as sock:
                 sock.settimeout(12)
                 fingerprint = hashlib.sha256(sock.getpeercert(binary_form=True)).hexdigest()
+                stage = 'request_frame'
                 # Consume the bounded request before denial, avoiding a TCP reset
                 # caused by closing with unread application data on Windows.
                 request = receive(sock, timeout=4)
@@ -151,19 +182,25 @@ class Handler(socketserver.BaseRequestHandler):
                     send(sock, {'error': 'rate_limit'})
                     return
                 service = request.get('service')
+                if request == {'op': 'check', 'service': service} and service in identity['services']:
+                    send(sock, {'ready': True})
+                    audit('check_succeeded', fingerprint=fingerprint, service=service)
+                    return
                 operation = 'pull' if identity['role'] == 'agent' else ('open' if service == STREAM_SERVICE else 'query')
                 if set(request) != {'op', 'service'} or request['op'] != operation or service not in identity['services']:
                     audit('service_denied', fingerprint=fingerprint)
                     send(sock, {'error': 'denied'})
                     return
+                stage = 'service_exchange'
                 if operation == 'pull':
                     self.pull(sock, service, fingerprint)
                 elif operation == 'open':
                     self.open_stream(sock, fingerprint)
                 else:
                     self.query(sock, service, fingerprint)
-        except (OSError, ValueError, TypeError, KeyError, RecursionError):
-            audit('connection_rejected', fingerprint=fingerprint)
+        except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+            audit('connection_rejected', fingerprint=fingerprint, stage=stage,
+                  reason=failure_reason(error))
 
     def query(self, sock, service, fingerprint):
         gateway = self.server
@@ -271,15 +308,21 @@ def agent(args, stop=None):
     stop = stop or threading.Event()
     context = tls(args.ca, args.cert, args.key)
     delay = 1
+    connected = False
+    audit('agent_started', service=args.service)
     while not stop.is_set():
         try:
             with connect(args, context) as sock:
                 send(sock, {'op': 'pull', 'service': args.service})
                 job = receive(sock)
                 if 'error' in job:
-                    audit('agent_denied')
+                    connected = False
+                    audit('agent_denied', reason='rate_limit' if job['error'] == 'rate_limit' else 'denied')
                     stop.wait(30)
                     continue
+                if not connected:
+                    audit('agent_connected', service=args.service)
+                    connected = True
                 if job != {'idle': True}:
                     if args.service == STREAM_SERVICE:
                         if set(job) != {'id', 'service', 'mode'} or job['service'] != STREAM_SERVICE or job['mode'] != 'stream':
@@ -303,8 +346,9 @@ def agent(args, stop=None):
                         audit('lab_unavailable', service=args.service)
             delay = 1
             stop.wait(2)
-        except (OSError, ValueError, TypeError, KeyError):
-            audit('agent_reconnect', retry_seconds=delay)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            connected = False
+            audit('agent_reconnect', retry_seconds=delay, reason=failure_reason(error))
             stop.wait(delay + random.uniform(0, delay / 4))
             delay = min(30, delay * 2)
 
@@ -362,7 +406,7 @@ class Forwarder(socketserver.TCPServer):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['gateway', 'agent', 'query', 'forward', 'lab'])
+    parser.add_argument('mode', choices=['gateway', 'agent', 'query', 'check', 'forward', 'lab'])
     parser.add_argument('--host', default='localhost')
     parser.add_argument('--port', type=int, default=8443)
     parser.add_argument('--bind', default='127.0.0.1')
@@ -394,11 +438,15 @@ def main():
             audit('forward_listening', service=STREAM_SERVICE, port=args.local_port)
             server.serve_forever()
     else:
-        with connect(args, tls(args.ca, args.cert, args.key)) as sock:
-            send(sock, {'op': 'query', 'service': args.service})
-            result = receive(sock)
-            print(json.dumps(result))
-            return 1 if 'error' in result else 0
+        try:
+            with connect(args, tls(args.ca, args.cert, args.key)) as sock:
+                send(sock, {'op': 'check' if args.mode == 'check' else 'query', 'service': args.service})
+                result = receive(sock)
+                print(json.dumps(result))
+                return 1 if 'error' in result else 0
+        except (OSError, ValueError) as error:
+            audit('check_failed' if args.mode == 'check' else 'query_failed', reason=failure_reason(error))
+            return 1
     return 0
 
 

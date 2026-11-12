@@ -201,6 +201,54 @@ python poc.py query --host secure-gateway.sicredi.space --port 443 --cert certs/
 
 ## Operação, revogação e rollback
 
+### Diagnosticar connection_rejected / agent_reconnect
+
+Atualize o código e reinicie os processos para usar os campos `stage` e `reason`.
+`agent_started` indica início; `agent_connected` confirma que um poll foi respondido
+após autenticação e autorização. Sem consultas, o agente permanece aguardando trabalho.
+Não é necessário executar `lab` para validar apenas a conexão com o gateway:
+
+```powershell
+python poc.py check --host localhost --port 8443 --cert certs/agent.crt --key certs/agent.key
+```
+
+Resultado esperado: `{"ready": true}`. O teste não consome pedidos pendentes nem
+conecta a serviços locais. No teste em um único computador, `localhost` exige SAN
+`DNS:localhost` no certificado do gateway; um certificado emitido para o domínio da
+EC2 não serve para esse nome. Em máquinas diferentes, `localhost` aponta para a própria
+máquina: use o hostname do gateway e um certificado que contenha esse mesmo hostname.
+
+| reason | Verificação |
+| --- | --- |
+| `hostname_mismatch` | O `--host` deve corresponder ao SAN do certificado do gateway. |
+| `untrusted_ca`, `peer_rejected_ca` | Gateway e agente devem confiar na CA que emitiu o certificado do outro; não gere uma CA diferente por máquina. |
+| `certificate_expired`, `peer_certificate_expired` | Certificados de laboratório duram dois dias; emita um conjunto novo e atualize política e processos. |
+| `certificate_not_yet_valid` | Confira data/hora dos computadores e validade do certificado. |
+| `client_certificate_required`, `peer_rejected_certificate` | Confira os arquivos de certificado/chave do agente e seus usos permitidos. |
+| `connection_refused` | Confira se o gateway está ativo e se host/porta são os mesmos. |
+| `not_tls` | O processo conectado não está usando o protocolo TLS esperado. |
+| `timeout`, `connection_closed`, `tls_error` | Confira os dois lados, porta em uso e eventual interrupção de rede/endpoint. |
+
+`stage=tls_handshake` indica falha antes de receber a identidade; `request_frame`
+indica falha na leitura do pedido; `service_exchange` indica operação já autorizada.
+Não envie chaves privadas para diagnóstico. Os códigos não incluem texto bruto de exceção.
+
+Para isolar certificados locais inconsistentes, pare agente e gateway com Ctrl+C,
+crie uma pasta **nova** e use exatamente esse conjunto nos dois processos:
+
+```powershell
+python make_lab_certs.py --out certs-local --hostname localhost
+python poc.py gateway --ca certs-local/ca.crt --cert certs-local/gateway.crt --key certs-local/gateway.key --policy certs-local/policy.json
+# Outro terminal, na mesma pasta:
+python poc.py check --host localhost --port 8443 --ca certs-local/ca.crt --cert certs-local/agent.crt --key certs-local/agent.key
+python poc.py agent --host localhost --port 8443 --ca certs-local/ca.crt --cert certs-local/agent.crt --key certs-local/agent.key
+```
+
+Se `certs-local` já existir, escolha outro nome e ajuste todos os caminhos. Não misture
+a política antiga com certificados novos. Preserve os certificados da EC2 separadamente.
+
+### Operação regular
+
 - `agent_timeout`: agente desconectado, serviço divergente, identidade sem autorização
   ou rede bloqueada. Confira horário, SAN, validade e eventos JSON; nunca desligue a validação TLS.
 - `lab_unavailable`/`invalid_lab_response`: suba `python poc.py lab` e confirme porta
