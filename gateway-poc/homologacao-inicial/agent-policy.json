@@ -1,0 +1,41 @@
+{
+  "format": 1,
+  "role": "agent",
+  "patch": {
+    "operation_mode": "homologation",
+    "agent_id": "windows-lab-01",
+    "services": {
+      "gitlab": {
+        "enabled": true,
+        "local_port": 18443,
+        "test_authorization": {
+          "kind": "requester_authorized_test",
+          "agent_id": "windows-lab-01",
+          "requested_by": "ubuntu",
+          "issued_utc": "2026-11-13T21:33:28Z",
+          "expires_utc": "2026-11-14T21:33:28Z",
+          "corporate_approval": "pending",
+          "purpose": "Final POC validation requested by operator; not production approval"
+        }
+      },
+      "artifactory": {
+        "enabled": true,
+        "local_port": 18081,
+        "test_authorization": {
+          "kind": "requester_authorized_test",
+          "agent_id": "windows-lab-01",
+          "requested_by": "ubuntu",
+          "issued_utc": "2026-11-13T21:33:28Z",
+          "expires_utc": "2026-11-14T21:33:28Z",
+          "corporate_approval": "pending",
+          "purpose": "Final POC validation requested by operator; not production approval"
+        }
+      }
+    },
+    "max_bytes": 16777216,
+    "max_seconds": 300,
+    "max_sessions": 4,
+    "idle_seconds": 30,
+    "client_requests_per_minute": 120
+  }
+}
