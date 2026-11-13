@@ -5,9 +5,11 @@ import collections
 import contextlib
 import datetime
 import hashlib
+import hmac
 import http.client
 import http.server
 import json
+import os
 import signal
 import socket
 import socketserver
@@ -26,8 +28,8 @@ from cryptography.hazmat.primitives import serialization
 import poc
 from stream import relay
 
-BLOCK = 4096
-MAX_HTTP = 20000
+BLOCK = 32768
+MAX_HTTP = 65536
 TARGETS = {
     'lab-status': ('127.0.0.1', 18765), 'lab-catalog': ('127.0.0.1', 18765),
     'lab-echo': ('127.0.0.1', 18766),
@@ -69,6 +71,13 @@ def file(config, name):
     return str((config['_root'] / config[name]).resolve())
 
 
+def utc_expiry(value):
+    try:
+        return datetime.datetime.strptime(value, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()
+    except (TypeError, ValueError):
+        return 0
+
+
 def service_allowed(config, service):
     if service not in TARGETS:
         return False
@@ -77,6 +86,13 @@ def service_allowed(config, service):
         return False
     if service.startswith('lab-'):
         return True
+    test = entry.get('test_authorization', {})
+    if config.get('operation_mode') == 'homologation':
+        return (test.get('kind') == 'requester_authorized_test'
+                and test.get('agent_id') == config['agent_id']
+                and isinstance(test.get('requested_by'), str) and bool(test['requested_by'].strip())
+                and test.get('corporate_approval') == 'pending'
+                and utc_expiry(test.get('expires_utc')) > time.time())
     approval = entry.get('approval', {})
     try:
         expires = datetime.datetime.strptime(approval['expires_utc'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc)
@@ -133,7 +149,7 @@ class State:
     def __init__(self, config):
         self.config = config
         self.lock = threading.RLock()
-        self.job = None
+        self.jobs = {}
         self.rates = collections.defaultdict(collections.deque)
         self.signer = Signer(config['gateway_id'], file(config, 'signing_key'))
         self.replay = ReplayStore(file(config, 'replay_db'))
@@ -155,13 +171,15 @@ class State:
         with self.lock:
             if action == 'check' and set(body) == {'action', 'service'}:
                 return {'ready': True}
-            job = self.job
             if action == 'poll' and set(body) == {'action', 'service'}:
-                if not job or job['service'] != service or job['assigned'] or job['done'].is_set():
+                job = next((j for j in self.jobs.values() if j['service'] == service
+                            and not j['assigned'] and not j['done'].is_set()), None)
+                if job is None:
                     return {'idle': True}
                 job['assigned'] = True
                 poc.audit('https_request_assigned', request_id=job['id'], service=service)
                 return {'job': job['id']}
+            job = self.jobs.get(body.get('job'))
             if (action != 'exchange' or set(body) != {'action', 'service', 'job', 'seq', 'data', 'closed', 'ready'}
                     or not job or job['done'].is_set() or not job['assigned']
                     or job['id'] != body['job'] or job['service'] != service
@@ -200,7 +218,7 @@ class State:
             if outbound:
                 job['activity'] = time.monotonic()
             if (job['bytes'] > self.config['max_bytes']
-                    or time.monotonic() - job['activity'] > 10):
+                    or time.monotonic() - job['activity'] > self.config.get('idle_seconds', 10)):
                 closed, outbound = True, b''
             if closed:
                 job['done'].set()
@@ -295,12 +313,32 @@ class ClientHandler(TLSAccept, socketserver.BaseRequestHandler):
     def handle(self):
         state = self.server.state
         try:
-            identity = hashlib.sha256(self.request.getpeercert(binary_form=True)).hexdigest()
-            policy = state.config['clients'].get(identity, {})
             request = poc.receive(self.request, timeout=4)
+            mode = state.config.get('client_auth', 'mtls')
+            if mode == 'token':
+                supplied = request.get('token')
+                identity = request.get('client_id')
+                if not isinstance(identity, str) or len(identity) > 64:
+                    identity = 'unknown'
+                policy = state.config.get('token_clients', {}).get(identity, {})
+                state.rate(identity if policy else 'unknown', min(120, state.config.get('client_requests_per_minute', 30)))
+                if (not isinstance(supplied, str) or not 32 <= len(supplied) <= 128
+                        or policy.get('enabled') is not True
+                        or utc_expiry(policy.get('expires_utc')) <= time.time()
+                        or not hmac.compare_digest(hashlib.sha256(supplied.encode()).hexdigest(), policy.get('token_sha256', ''))):
+                    poc.send(self.request, {'error': 'denied'})
+                    poc.audit('token_client_denied')
+                    return
+                expected = {'op', 'service', 'client_id', 'token'}
+            elif mode == 'mtls':
+                identity = hashlib.sha256(self.request.getpeercert(binary_form=True)).hexdigest()
+                policy = state.config['clients'].get(identity, {})
+                state.rate(identity if identity in state.config['clients'] else 'unknown', 30)
+                expected = {'op', 'service'}
+            else:
+                raise ValueError('unknown client auth mode')
             service = request.get('service')
-            state.rate(identity if identity in state.config['clients'] else 'unknown', 30)
-            if (set(request) != {'op', 'service'} or request['op'] not in ('open', 'check')
+            if (set(request) != expected or request['op'] not in ('open', 'check')
                     or service not in policy.get('services', []) or not service_allowed(state.config, service)):
                 poc.send(self.request, {'error': 'denied'})
                 return
@@ -312,12 +350,17 @@ class ClientHandler(TLSAccept, socketserver.BaseRequestHandler):
                    'done': threading.Event(), 'assigned': False, 'ready': False, 'seq': 0,
                    'bytes': 0, 'activity': now, 'deadline': now + state.config['max_seconds'],
                    'error': 'agent_timeout'}
+            expiry = utc_expiry(policy.get('expires_utc'))
+            test_expiry = utc_expiry(state.config['services'][service].get('test_authorization', {}).get('expires_utc'))
+            for limit in (expiry, test_expiry):
+                if limit:
+                    job['deadline'] = min(job['deadline'], now + max(0, limit - time.time()))
             with state.lock:
-                if state.job is not None:
+                if len(state.jobs) >= min(4, state.config.get('max_sessions', 1)):
                     poc.send(self.request, {'error': 'busy'})
                     return
-                state.job = job
-            poc.audit('https_session_started', request_id=job['id'], service=service, fingerprint=identity)
+                state.jobs[job['id']] = job
+            poc.audit('https_session_started', request_id=job['id'], service=service, client_id=identity, auth=mode)
             try:
                 while not job['done'].wait(.1):
                     with state.lock:
@@ -329,8 +372,7 @@ class ClientHandler(TLSAccept, socketserver.BaseRequestHandler):
             finally:
                 with state.lock:
                     job['done'].set()
-                    if state.job is job:
-                        state.job = None
+                    state.jobs.pop(job['id'], None)
                 poc.audit('https_session_finished', request_id=job['id'], service=service, bytes=job['bytes'])
         except (OSError, ValueError, KeyError, TypeError):
             poc.audit('https_client_rejected')
@@ -391,7 +433,7 @@ class Channel:
 
 def agent(config, service, stop):
     if not service_allowed(config, service):
-        raise ValueError('service disabled or approval missing')
+        raise ChannelError('service_disabled_or_expired', 'service_authorization')
     channel = Channel(config)
     delay, connected = 1, False
     while not stop.is_set():
@@ -402,13 +444,14 @@ def agent(config, service, stop):
                 connected = True
             if 'job' in result:
                 local = None
+                seq, finished = 0, False
                 try:
                     local = socket.create_connection(TARGETS[service], timeout=2)
                     local.settimeout(.1)
                 except OSError:
                     pass
                 try:
-                    seq, closed = 0, local is None
+                    closed = local is None
                     deadline = time.monotonic() + config['max_seconds']
                     while not stop.is_set() and time.monotonic() < deadline:
                         data = b''
@@ -423,15 +466,22 @@ def agent(config, service, stop):
                             'closed': closed, 'ready': local is not None})
                         if response.get('seq') != seq:
                             raise ValueError('invalid sequence')
+                        seq += 1
                         received = base64.b64decode(response['data'], validate=True)
                         if len(received) > BLOCK:
                             raise ValueError('block limit')
                         if received and local:
                             local.sendall(received)
                         if closed or response['closed']:
+                            finished = True
                             break
-                        seq += 1
                 finally:
+                    if not finished:
+                        try:
+                            channel.request({'action': 'exchange', 'service': service, 'job': result['job'],
+                                             'seq': seq, 'data': '', 'closed': True, 'ready': local is not None})
+                        except (OSError, ValueError, KeyError, jwt.PyJWTError):
+                            poc.audit('session_abort_pending', service=service)
                     if local:
                         local.close()
             delay = 1
@@ -445,21 +495,198 @@ def agent(config, service, stop):
 
 def client_socket(config, service, op='open'):
     if not service_allowed(config, service):
-        raise ValueError('service disabled or approval missing')
+        raise ChannelError('service_disabled_or_expired', 'service_authorization')
     context = ssl.create_default_context()
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_verify_locations(cafile=file(config, 'tls_ca'))
-    context.load_cert_chain(file(config, 'tls_cert'), file(config, 'tls_key'))
+    mode = config.get('client_auth', 'mtls')
+    if mode == 'mtls':
+        context.load_cert_chain(file(config, 'tls_cert'), file(config, 'tls_key'))
+    elif mode != 'token':
+        raise ValueError('unknown client auth mode')
     args = argparse.Namespace(host=config['client_host'], port=config['client_port'])
     sock = poc.connect(args, context)
     try:
-        poc.send(sock, {'op': op, 'service': service})
-        if poc.receive(sock) != {'ready': True}:
-            raise ValueError('client denied or agent unavailable')
+        request = {'op': op, 'service': service}
+        if mode == 'token':
+            request.update(client_id=config['client_id'], token=Path(file(config, 'client_token_file')).read_text().strip())
+        poc.send(sock, request)
+        result = poc.receive(sock)
+        if result != {'ready': True}:
+            reason = {'denied': 'client_or_service_denied', 'busy': 'gateway_busy',
+                      'agent_timeout': 'agent_not_available', 'target_unavailable': 'target_unavailable'}.get(
+                          result.get('error'), 'client_response_invalid')
+            raise ChannelError(reason, 'client_authorization')
         return sock
     except BaseException:
         sock.close()
         raise
+
+
+def client_tls_context(config):
+    mode = config.get('client_auth', 'mtls')
+    if mode == 'mtls':
+        return poc.tls(file(config, 'tls_ca'), file(config, 'tls_cert'), file(config, 'tls_key'), True)
+    if mode != 'token':
+        raise ValueError('unknown client auth mode')
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(file(config, 'tls_cert'), file(config, 'tls_key'))
+    return context
+
+
+def agent_pool(config, services, stop):
+    for service in services:
+        if not service_allowed(config, service):
+            raise ChannelError('service_disabled_or_expired', 'service_authorization')
+    # Four bounded workers allow concurrent browser/Git requests without an open proxy.
+    workers = [threading.Thread(target=agent, args=(config, services[i % len(services)], stop), daemon=True)
+               for i in range(4)]
+    for worker in workers:
+        worker.start()
+    while not stop.wait(.5):
+        if any(not service_allowed(config, service) for service in services):
+            poc.audit('homologation_expired')
+            stop.set()
+    for worker in workers:
+        worker.join(10)
+
+
+def preflight(config, services):
+    channel = Channel(config)
+    results = []
+    target_tls = ssl.create_default_context()
+    target_tls.minimum_version = ssl.TLSVersion.TLSv1_2
+    if config.get('corporate_ca'):
+        target_tls.load_verify_locations(cafile=file(config, 'corporate_ca'))
+    for service in services:
+        if not service_allowed(config, service):
+            raise ChannelError('service_disabled_or_expired', 'service_authorization')
+        reply = channel.request({'action': 'check', 'service': service})
+        if reply != {'ready': True}:
+            raise ChannelError('gateway_preflight_invalid', 'gateway_preflight')
+        host, port = TARGETS[service]
+        try:
+            socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            if service.startswith('lab-'):
+                with socket.create_connection((host, port), timeout=5):
+                    pass
+                results.append({'service': service, 'transport': 'tcp_ready'})
+                continue
+            path = config.get('readiness_paths', {}).get(service, '/')
+            if not isinstance(path, str) or not path.startswith('/') or path.startswith('//') or '\r' in path or '\n' in path:
+                raise ChannelError('invalid_readiness_path', 'target_preflight')
+            connection = (http.client.HTTPSConnection(host, port, timeout=5, context=target_tls)
+                          if service == 'gitlab' else http.client.HTTPConnection(host, port, timeout=5))
+            try:
+                connection.request('HEAD', path, headers={'Connection': 'close'})
+                response = connection.getresponse()
+                if not (200 <= response.status < 400 or response.status == 401):
+                    raise ChannelError('target_http_not_ready', 'target_preflight', response.status)
+                results.append({'service': service, 'http_status': response.status,
+                                'application_login': 'not_tested_on_agent'})
+            finally:
+                connection.close()
+        except (OSError, http.client.HTTPException) as error:
+            error.poc_stage = 'target_preflight'
+            raise
+    return {'ready': True, 'checks': results, 'scope': 'agent transport; application credentials remain on client'}
+
+
+def mark_ready(path):
+    if path:
+        target = Path(path)
+        temporary = target.with_name(target.name + '.' + uuid.uuid4().hex + '.tmp')
+        temporary.write_text(json.dumps({'ready': True, 'pid': os.getpid(), 'time': time.time()}), encoding='utf-8')
+        temporary.replace(target)
+
+
+def watch_stop_file(path, stop):
+    while not stop.wait(.25):
+        if Path(path).is_file():
+            stop.set()
+
+
+class ProxyHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        established = False
+        destination_allowed = False
+        try:
+            header = bytearray()
+            deadline = time.monotonic() + 5
+            while not header.endswith(b'\r\n\r\n'):
+                if len(header) >= 16384 or time.monotonic() >= deadline:
+                    raise ValueError('header limit')
+                self.request.settimeout(max(.01, deadline - time.monotonic()))
+                data = self.request.recv(1)
+                if not data:
+                    return
+                header.extend(data)
+            lines = header.decode('iso-8859-1').split('\r\n')
+            method, target, version = lines[0].split()
+            if version not in ('HTTP/1.0', 'HTTP/1.1'):
+                raise ValueError('version denied')
+            headers = []
+            names = []
+            for line in lines[1:-2]:
+                name, value = line.split(':', 1)
+                if not name or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789-' for c in name.lower()):
+                    raise ValueError('header denied')
+                names.append(name.lower())
+                if name.lower() not in ('host', 'connection', 'proxy-connection', 'proxy-authorization'):
+                    headers.append((name, value.strip()))
+            if names.count('content-length') > 1 or ('content-length' in names and 'transfer-encoding' in names):
+                raise ValueError('ambiguous body')
+            url = urlsplit('//' + target if method == 'CONNECT' else target)
+            port = url.port or (443 if method == 'CONNECT' else 80)
+            if url.username or url.password or url.fragment:
+                raise ValueError('authority denied')
+            if method == 'CONNECT':
+                if url.path or url.query:
+                    raise ValueError('authority denied')
+            elif (url.scheme != 'http' or method not in ('GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS')):
+                raise ValueError('method denied')
+            service = next((name for name, destination in TARGETS.items()
+                            if destination == (url.hostname, port)
+                            and service_allowed(self.server.config, name)), None)
+            if service is None:
+                raise ValueError('destination denied')
+            destination_allowed = True
+            with client_socket(self.server.config, service) as remote:
+                if method == 'CONNECT':
+                    self.request.sendall(b'HTTP/1.1 200 Connection Established\r\n\r\n')
+                else:
+                    path = url.path or '/'
+                    if url.query:
+                        path += '?' + url.query
+                    host = url.hostname if port == 80 else f'{url.hostname}:{port}'
+                    request = f'{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n'
+                    request += ''.join(f'{name}: {value}\r\n' for name, value in headers) + '\r\n'
+                    remote.sendall(request.encode('iso-8859-1'))
+                established = True
+                reason, count = relay(self.request, remote, self.server.config['max_bytes'],
+                                      self.server.config['max_seconds'], self.server.config.get('idle_seconds', 10))
+                poc.audit('local_proxy_finished', service=service, outcome=reason, bytes=count)
+        except (OSError, ValueError, TypeError) as error:
+            poc.audit('local_proxy_failed' if destination_allowed else 'local_proxy_denied', **diagnostics(error))
+            if not established:
+                try:
+                    status = b'502 Bad Gateway' if destination_allowed else b'403 Forbidden'
+                    self.request.sendall(b'HTTP/1.1 ' + status + b'\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
+                except OSError:
+                    pass
+
+
+class LocalProxy(BoundedServer, socketserver.TCPServer):
+    allow_reuse_address = True
+
+    def __init__(self, config):
+        self.config = config
+        self.slots = threading.BoundedSemaphore(4)
+        super().__init__(('127.0.0.1', config.get('proxy_port', 18080)), ProxyHandler)
+
+    def handle_error(self, *_):
+        poc.audit('local_proxy_failed')
 
 
 class LocalHandler(socketserver.BaseRequestHandler):
@@ -467,7 +694,8 @@ class LocalHandler(socketserver.BaseRequestHandler):
         try:
             with client_socket(self.server.config, self.server.service) as remote:
                 reason, count = relay(self.request, remote,
-                    max_bytes=self.server.config['max_bytes'], max_seconds=self.server.config['max_seconds'])
+                    max_bytes=self.server.config['max_bytes'], max_seconds=self.server.config['max_seconds'],
+                    idle_seconds=self.server.config.get('idle_seconds', 10))
                 poc.audit('https_local_finished', outcome=reason, bytes=count)
         except (OSError, ValueError):
             poc.audit('https_local_failed')
@@ -475,10 +703,13 @@ class LocalHandler(socketserver.BaseRequestHandler):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['gateway', 'agent', 'check', 'query', 'forward'])
+    parser.add_argument('mode', choices=['gateway', 'agent', 'check', 'query', 'forward', 'proxy', 'preflight'])
     parser.add_argument('--config', required=True)
-    parser.add_argument('--service', choices=TARGETS, default='lab-status')
+    parser.add_argument('--service', choices=[*TARGETS, 'homologation'], default='lab-status')
     parser.add_argument('--lab', action='store_true', help='Start the fixed loopback fixtures with the agent')
+    parser.add_argument('--preflight', action='store_true', help='Require all agent connectivity checks before starting')
+    parser.add_argument('--ready-file', help='Local readiness marker for the background launcher')
+    parser.add_argument('--stop-file', help='Private local stop marker for the background launcher')
     args = parser.parse_args()
     config = read_config(args.config)
     stop = threading.Event()
@@ -489,7 +720,7 @@ def main():
         agent_tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         agent_tls.minimum_version = ssl.TLSVersion.TLSv1_2
         agent_tls.load_cert_chain(file(config, 'tls_cert'), file(config, 'tls_key'))
-        client_tls = poc.tls(file(config, 'tls_ca'), file(config, 'tls_cert'), file(config, 'tls_key'), True)
+        client_tls = client_tls_context(config)
         with API((config['bind'], config['agent_port']), state, agent_tls) as api, \
                 Clients((config['bind'], config['client_port']), state, client_tls) as clients:
             for server in (api, clients):
@@ -501,6 +732,16 @@ def main():
             clients.shutdown()
         state.replay.db.close()
     elif args.mode == 'agent':
+        if args.stop_file:
+            threading.Thread(target=watch_stop_file, args=(args.stop_file, stop), daemon=True).start()
+        if args.service == 'homologation':
+            if args.lab:
+                raise ValueError('homologation does not start synthetic fixtures')
+            if args.preflight:
+                poc.audit('agent_preflight_ok', **preflight(config, ['gitlab', 'artifactory']))
+            mark_ready(args.ready_file)
+            agent_pool(config, ['gitlab', 'artifactory'], stop)
+            return
         if args.lab and not args.service.startswith('lab-'):
             raise ValueError('automatic lab only supports synthetic services')
         with contextlib.ExitStack() as stack:
@@ -511,15 +752,32 @@ def main():
                 for server in servers:
                     threading.Thread(target=server.serve_forever, daemon=True).start()
             try:
+                if args.preflight:
+                    poc.audit('agent_preflight_ok', **preflight(config, [args.service]))
+                mark_ready(args.ready_file)
                 agent(config, args.service, stop)
             finally:
                 for server in servers:
                     server.shutdown()
                 poc.audit('https_agent_stopped', service=args.service)
+    elif args.mode == 'preflight':
+        print(json.dumps(preflight(config, ['gitlab', 'artifactory'] if args.service == 'homologation' else [args.service])))
     elif args.mode == 'check':
+        if args.service == 'homologation':
+            results = {}
+            for service in ('gitlab', 'artifactory'):
+                if 'agent_url' in config:
+                    if not service_allowed(config, service):
+                        raise ChannelError('service_disabled_or_expired', 'service_authorization')
+                    results[service] = Channel(config).request({'action': 'check', 'service': service})
+                else:
+                    with client_socket(config, service, 'check'):
+                        results[service] = {'ready': True}
+            print(json.dumps(results))
+            return
         if 'agent_url' in config:
             if not service_allowed(config, args.service):
-                raise ValueError('service disabled')
+                raise ChannelError('service_disabled_or_expired', 'service_authorization')
             result = Channel(config).request({'action': 'check', 'service': args.service})
             print(json.dumps(result))
         else:
@@ -537,9 +795,15 @@ def main():
             if response.status != 200 or json.loads(body) != expected:
                 raise ValueError('invalid fixture')
             print(json.dumps({'result': expected}))
+    elif args.mode == 'proxy':
+        with LocalProxy(config) as server:
+            server.timeout = .5
+            poc.audit('local_proxy_started', port=server.server_address[1])
+            while not stop.is_set():
+                server.handle_request()
     else:
         if not service_allowed(config, args.service):
-            raise ValueError('service disabled or approval missing')
+            raise ChannelError('service_disabled_or_expired', 'service_authorization')
         with socketserver.TCPServer(('127.0.0.1', config['services'][args.service]['local_port']), LocalHandler) as server:
             server.config, server.service = config, args.service
             server.timeout = .5
@@ -551,6 +815,6 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (OSError, ValueError, KeyError, jwt.PyJWTError) as error:
+    except (OSError, ValueError, KeyError, jwt.PyJWTError, http.client.HTTPException) as error:
         poc.audit('https_failed', **diagnostics(error))
         raise SystemExit(1)

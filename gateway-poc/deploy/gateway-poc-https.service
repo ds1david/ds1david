@@ -1,5 +1,5 @@
 [Unit]
-Description=HTTPS signed-agent and mTLS-client controlled gateway POC
+Description=HTTPS signed-agent and authenticated TLS-client controlled gateway POC
 After=network-online.target
 Wants=network-online.target
 

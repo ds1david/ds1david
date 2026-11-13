@@ -2,9 +2,13 @@ import argparse
 import base64
 import contextlib
 import copy
+import datetime
 import http.client
 import io
 import json
+import os
+import hashlib
+import secrets
 import shutil
 import socket
 import ssl
@@ -12,6 +16,7 @@ import subprocess
 import threading
 import time
 import unittest
+import uuid
 from unittest import mock
 
 import jwt
@@ -19,6 +24,7 @@ import https_poc as h
 import make_lab_certs
 import poc
 import prepare_https
+import homologation
 from test_poc import TempDirectory
 
 
@@ -67,6 +73,256 @@ class HTTPSIntegration(unittest.TestCase):
 
     def setUp(self):
         self.state.rates.clear()
+
+    @contextlib.contextmanager
+    def token_client(self, services=('lab-status', 'lab-echo')):
+        token = secrets.token_urlsafe(32)
+        identity = 'test-client-01'
+        expires = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
+        policy = {'enabled': True, 'services': list(services), 'expires_utc': expires.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                  'token_sha256': hashlib.sha256(token.encode()).hexdigest()}
+        old_mode = self.gateway.get('client_auth')
+        old_clients = self.gateway.get('token_clients')
+        self.gateway['client_auth'], self.gateway['token_clients'] = 'token', {identity: policy}
+        server = h.Clients(('127.0.0.1', 0), self.state, h.client_tls_context(self.gateway))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        config = copy.deepcopy(self.client)
+        config.update(client_auth='token', client_id=identity, client_token_file='test-client.token',
+                      client_port=server.server_address[1], proxy_port=0)
+        config.pop('tls_cert', None)
+        config.pop('tls_key', None)
+        token_path = config['_root'] / 'test-client.token'
+        token_path.write_text(token, encoding='ascii')
+        try:
+            yield config, policy, token
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(10)
+            token_path.unlink(missing_ok=True)
+            if old_mode is None:
+                self.gateway.pop('client_auth', None)
+            else:
+                self.gateway['client_auth'] = old_mode
+            if old_clients is None:
+                self.gateway.pop('token_clients', None)
+            else:
+                self.gateway['token_clients'] = old_clients
+
+    def test_client_token_without_client_certificate_and_no_secret_logs(self):
+        with self.token_client() as (config, policy, token):
+            with h.client_socket(config, 'lab-status', 'check'):
+                pass
+            self.assertNotIn(token, self.output.getvalue())
+            (config['_root'] / 'test-client.token').write_text('wrong-token-' * 4)
+            with self.assertRaises(ValueError):
+                h.client_socket(config, 'lab-status', 'check')
+
+    def test_token_scope_expiry_revocation_and_missing_token(self):
+        with self.token_client(('lab-status',)) as (config, policy, token):
+            with self.assertRaises(ValueError):
+                h.client_socket(config, 'lab-echo', 'check')
+            policy['enabled'] = False
+            with self.assertRaises(ValueError):
+                h.client_socket(config, 'lab-status', 'check')
+            policy['enabled'] = True
+            policy['expires_utc'] = '2000-01-01T00:00:00Z'
+            with self.assertRaises(ValueError):
+                h.client_socket(config, 'lab-status', 'check')
+            context = ssl.create_default_context(cafile=h.file(config, 'tls_ca'))
+            with socket.create_connection(('127.0.0.1', config['client_port']), timeout=5) as raw:
+                with context.wrap_socket(raw, server_hostname='localhost') as peer:
+                    poc.send(peer, {'op': 'check', 'service': 'lab-status', 'client_id': config['client_id']})
+                    self.assertEqual({'error': 'denied'}, poc.receive(peer))
+
+    def test_token_client_still_checks_server_hostname(self):
+        with self.token_client() as (config, policy, token):
+            config['client_host'] = '127.0.0.1'
+            with self.assertRaises(ssl.SSLCertVerificationError):
+                h.client_socket(config, 'lab-status', 'check')
+
+    def test_preflight_reports_connectivity_not_application_login(self):
+        connection = mock.MagicMock()
+        connection.getresponse.return_value.status = 401
+        with mock.patch.object(h, 'service_allowed', return_value=True), \
+                mock.patch.object(h.Channel, 'request', return_value={'ready': True}), \
+                mock.patch.object(h.socket, 'getaddrinfo', return_value=[]), \
+                mock.patch.object(h.http.client, 'HTTPSConnection', return_value=connection), \
+                mock.patch.object(h.http.client, 'HTTPConnection', return_value=connection):
+            result = h.preflight(self.agent, ['gitlab', 'artifactory'])
+            self.assertTrue(result['ready'])
+            self.assertEqual(2, len(result['checks']))
+            self.assertEqual('not_tested_on_agent', result['checks'][0]['application_login'])
+            connection.getresponse.return_value.status = 403
+            with self.assertRaises(h.ChannelError) as failure:
+                h.preflight(self.agent, ['gitlab'])
+            self.assertEqual('target_http_not_ready', h.diagnostics(failure.exception)['reason'])
+
+    def test_preflight_failure_never_starts_agent_or_writes_ready_marker(self):
+        path = self.root / 'bundles/agent/preflight-config.json'
+        path.write_text(json.dumps({key: value for key, value in self.agent.items() if key != '_root'}))
+        marker = self.root / 'must-not-exist.json'
+        with mock.patch('sys.argv', ['https_poc.py', 'agent', '--config', str(path),
+                                     '--service', 'homologation', '--preflight', '--ready-file', str(marker)]), \
+                mock.patch.object(h.signal, 'signal'), \
+                mock.patch.object(h, 'preflight', side_effect=h.ChannelError('target_http_not_ready', 'target_preflight', 403)), \
+                mock.patch.object(h, 'agent_pool') as pool:
+            with self.assertRaises(h.ChannelError):
+                h.main()
+            pool.assert_not_called()
+            self.assertFalse(marker.exists())
+
+    @unittest.skipUnless(shutil.which('powershell'), 'Windows PowerShell unavailable')
+    def test_background_launcher_status_stop_and_pid_reuse_guard(self):
+        path = self.root / 'bundles/agent/background-config.json'
+        path.write_text(json.dumps({key: value for key, value in self.agent.items() if key != '_root'}))
+        runtime = self.root / 'runtime'
+        script = self.root.parents[1] / 'Start-RestrictedLab.ps1'
+        def invoke(mode):
+            # Windows children may inherit pipe handles even after PowerShell exits.
+            # Capture to ordinary files so a correctly detached child cannot hold
+            # unittest's communicate() open.
+            output = self.root / ('launcher-' + uuid.uuid4().hex + '.out')
+            errors = output.with_suffix('.err')
+            with output.open('w', encoding='utf-8') as stdout, errors.open('w', encoding='utf-8') as stderr:
+                result = subprocess.run(['powershell', '-NoProfile', '-File', str(script), '-Mode', mode,
+                                         '-Service', 'lab-status', '-Config', str(path),
+                                         '-RuntimeDirectory', str(runtime)], stdout=stdout, stderr=stderr, timeout=60)
+            result.stdout = output.read_text(encoding='utf-8-sig', errors='replace')
+            result.stderr = errors.read_text(encoding='utf-8-sig', errors='replace')
+            return result
+        try:
+            result = invoke('Agent')
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            record = json.loads((runtime / 'agent.json').read_text(encoding='utf-8-sig'))
+            self.assertEqual('agent_running', record['event'])
+            self.assertNotEqual(os.getpid(), record['pid'])
+            status = invoke('Status')
+            self.assertEqual(record['pid'], json.loads(status.stdout)['pid'])
+            with h.client_socket(self.client, 'lab-status') as sock:
+                sock.sendall(b'GET /status HTTP/1.0\r\nHost: localhost\r\n\r\n')
+                response = http.client.HTTPResponse(sock)
+                response.begin()
+                self.assertEqual(poc.SERVICES['lab-status'][1], json.loads(response.read(4096)))
+        finally:
+            stopped = invoke('Stop')
+            self.assertEqual(0, stopped.returncode, stopped.stdout + stopped.stderr)
+        self.assertFalse((runtime / 'agent.json').exists())
+        (runtime / 'agent.json').write_text(json.dumps({'pid': os.getpid(), 'start_ticks': '0', 'executable': 'wrong'}))
+        refused = invoke('Stop')
+        self.assertNotEqual(0, refused.returncode)
+        (runtime / 'agent.json').unlink()
+
+    def test_concurrent_sessions_for_two_services(self):
+        previous = self.gateway.get('max_sessions')
+        previous_idle = self.gateway.get('idle_seconds')
+        self.gateway['max_sessions'] = 2
+        self.gateway['idle_seconds'] = 30
+        with self.token_client() as (config, policy, token):
+            stop = threading.Event()
+            pool = threading.Thread(target=h.agent_pool, args=(self.agent, ['lab-status', 'lab-echo'], stop), daemon=True)
+            pool.start()
+            try:
+                with h.client_socket(config, 'lab-status') as first, h.client_socket(config, 'lab-echo') as second:
+                    with self.state.lock:
+                        self.assertEqual(2, len(self.state.jobs))
+                    second.sendall(b'two-services')
+                    self.assertEqual(b'two-services', poc.exact(second, 12, time.monotonic() + 12))
+                    first.sendall(b'GET /status HTTP/1.0\r\nHost: localhost\r\n\r\n')
+                    response = http.client.HTTPResponse(first)
+                    response.begin()
+                    self.assertEqual(poc.SERVICES['lab-status'][1], json.loads(response.read(4096)))
+            finally:
+                stop.set()
+                pool.join(15)
+                self.assertFalse(pool.is_alive())
+                if previous is None:
+                    self.gateway.pop('max_sessions', None)
+                else:
+                    self.gateway['max_sessions'] = previous
+                if previous_idle is None:
+                    self.gateway.pop('idle_seconds', None)
+                else:
+                    self.gateway['idle_seconds'] = previous_idle
+
+    def test_homologation_policies_preserve_tls_and_record_pending_corporate_approval(self):
+        with TempDirectory() as directory:
+            from pathlib import Path
+            directory = Path(directory)
+            output = directory / 'policies'
+            summary = homologation.prepare(output, requested_by='test-operator')
+            another = directory / 'other-client'
+            homologation.prepare(another, client_id='other-client', requested_by='test-operator', services=['gitlab'])
+            self.assertNotEqual((output / 'client.token').read_text(), (another / 'client.token').read_text())
+            token = (output / 'client.token').read_text().strip()
+            self.assertNotIn(token, json.dumps(summary))
+            for role, original in (('gateway', self.gateway), ('agent', self.agent), ('client', self.client)):
+                target = directory / (role + '-config.json')
+                original = {key: value for key, value in original.items() if key != '_root'}
+                target.write_text(json.dumps(original))
+                backup = homologation.apply(target, output / (role + '-policy.json'))
+                updated = h.read_config(target)
+                self.assertEqual(original, json.loads(Path(backup).read_text()))
+                for field in ('tls_cert', 'tls_key', 'tls_ca', 'signing_key', 'replay_db', 'agent_url'):
+                    self.assertEqual(original.get(field), updated.get(field))
+                self.assertTrue(h.service_allowed(updated, 'gitlab'))
+                self.assertTrue(h.service_allowed(updated, 'artifactory'))
+                self.assertEqual('pending', updated['services']['gitlab']['test_authorization']['corporate_approval'])
+                end = h.utc_expiry(updated['services']['gitlab']['test_authorization']['expires_utc'])
+                with mock.patch.object(h.time, 'time', return_value=end + 1):
+                    self.assertFalse(h.service_allowed(updated, 'gitlab'))
+                if role == 'gateway':
+                    self.assertNotIn(token, target.read_text())
+                    homologation.revoke(target, summary['client_id'])
+                    self.assertFalse(h.read_config(target)['token_clients'][summary['client_id']]['enabled'])
+                    homologation.apply(target, another / 'gateway-policy.json')
+                    identities = h.read_config(target)['token_clients']
+                    self.assertFalse(identities[summary['client_id']]['enabled'])
+                    self.assertEqual(['gitlab'], identities['other-client']['services'])
+
+    def test_local_proxy_http_and_connect_with_token(self):
+        for service in ('lab-status', 'lab-echo'):
+            with self.token_client() as (config, policy, token):
+                stop, agent = self.run_agent(service)
+                with h.LocalProxy(config) as proxy:
+                    thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+                    thread.start()
+                    try:
+                        with socket.create_connection(proxy.server_address, timeout=12) as local:
+                            if service == 'lab-status':
+                                local.sendall(b'GET http://127.0.0.1:18765/status HTTP/1.1\r\nHost: example.invalid\r\n\r\n')
+                                response = http.client.HTTPResponse(local)
+                                response.begin()
+                                self.assertEqual(200, response.status)
+                                self.assertEqual(poc.SERVICES['lab-status'][1], json.loads(response.read(4096)))
+                            else:
+                                local.sendall(b'CONNECT 127.0.0.1:18766 HTTP/1.1\r\nHost: localhost\r\n\r\n')
+                                header = b''
+                                while not header.endswith(b'\r\n\r\n'):
+                                    header += local.recv(1)
+                                self.assertIn(b'200 Connection Established', header)
+                                local.sendall(b'proxy-echo-fixture')
+                                self.assertEqual(b'proxy-echo-fixture', poc.exact(local, 18, time.monotonic() + 12))
+                    finally:
+                        proxy.shutdown()
+                        thread.join(10)
+                        stop.set()
+                        agent.join(15)
+
+    def test_local_proxy_denies_unknown_destination_without_gateway_connection(self):
+        with self.token_client() as (config, policy, token), h.LocalProxy(config) as proxy:
+            thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with mock.patch.object(h, 'client_socket') as gateway:
+                    with socket.create_connection(proxy.server_address, timeout=5) as local:
+                        local.sendall(b'CONNECT forbidden.invalid:443 HTTP/1.1\r\nHost: forbidden.invalid\r\n\r\n')
+                        self.assertIn(b'403 Forbidden', local.recv(4096))
+                    gateway.assert_not_called()
+            finally:
+                proxy.shutdown()
+                thread.join(10)
 
     def test_signed_check_and_client_mtls(self):
         self.assertEqual({'ready': True}, h.Channel(self.agent).request({'action': 'check', 'service': 'lab-status'}))
@@ -147,7 +403,7 @@ class HTTPSIntegration(unittest.TestCase):
         job = {'id': 'fixture', 'service': 'lab-echo', 'assigned': True,
                'done': threading.Event(), 'seq': 0}
         with self.state.lock:
-            self.state.job = job
+            self.state.jobs['fixture'] = job
         try:
             body = {'action': 'exchange', 'service': 'lab-echo', 'job': 'fixture',
                     'seq': 1, 'data': '', 'closed': False, 'ready': True}
@@ -159,7 +415,7 @@ class HTTPSIntegration(unittest.TestCase):
                 self.state.exchange(body)
         finally:
             with self.state.lock:
-                self.state.job = None
+                self.state.jobs.pop('fixture', None)
 
     def test_http_transport_does_not_disable_hostname_validation(self):
         config = copy.deepcopy(self.agent)

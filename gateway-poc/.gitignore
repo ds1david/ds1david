@@ -2,6 +2,7 @@ __pycache__/
 .venv/
 certs*/
 *.key
+*.token
 *.log
 policy.json
 .test-state/

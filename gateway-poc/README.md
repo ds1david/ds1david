@@ -3,6 +3,11 @@
 Projeto **secure-gateway**. Repositório oficial:
 [ds1david/ds1david](https://github.com/ds1david/ds1david), pasta `gateway-poc/`.
 
+Para a homologacao temporaria solicitada de GitLab e Artifactory, com token individual
+por cliente, proxy local e agente em segundo plano apos preflight, consulte
+[HOMOLOGATION.md](HOMOLOGATION.md). Esse perfil registra autorizacao do teste pelo
+solicitante e mantem a aprovacao corporativa explicitamente pendente.
+
 Para o novo agente HTTPS com assinaturas de aplicação, cliente separado com mTLS,
 launcher PowerShell e preparação de GitLab/Artifactory, consulte
 [HTTPS-POC.md](HTTPS-POC.md). Os comandos antigos abaixo continuam destinados ao

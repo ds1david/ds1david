@@ -8,7 +8,7 @@ MAX_SECONDS = 60
 IDLE_SECONDS = 10
 
 
-def relay(left, right, max_bytes=MAX_BYTES, max_seconds=MAX_SECONDS):
+def relay(left, right, max_bytes=MAX_BYTES, max_seconds=MAX_SECONDS, idle_seconds=IDLE_SECONDS):
     stop = threading.Event()
     lock = threading.Lock()
     state = {'bytes': 0, 'activity': time.monotonic(), 'reason': 'closed'}
@@ -21,7 +21,7 @@ def relay(left, right, max_bytes=MAX_BYTES, max_seconds=MAX_SECONDS):
             while not stop.is_set():
                 now = time.monotonic()
                 with lock:
-                    if now >= deadline or now - state['activity'] >= IDLE_SECONDS:
+                    if now >= deadline or now - state['activity'] >= idle_seconds:
                         state['reason'] = 'timeout'
                         break
                 try:

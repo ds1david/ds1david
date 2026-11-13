@@ -24,12 +24,14 @@ SERVICES = {
 }
 STREAM_SERVICE = 'lab-echo'
 ALLOWED_SERVICES = (*SERVICES, STREAM_SERVICE)
+AUDIT_LOCK = threading.Lock()
 
 
 def audit(event, **fields):
     # Callers supply only generated IDs, policy fingerprints, enums and counters.
-    print(json.dumps({'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-                      'event': event, **fields}), flush=True)
+    with AUDIT_LOCK:
+        print(json.dumps({'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                          'event': event, **fields}), flush=True)
 
 
 def failure_reason(error):
